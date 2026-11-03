@@ -1,3 +1,4 @@
+import { revalidateTag } from "next/cache";
 import { getRun } from "workflow/api";
 import type { ChatTrace } from "@/workflows/support-chat";
 import { getCustomer } from "@/lib/session";
@@ -14,5 +15,9 @@ export async function GET(_req: Request, { params }: { params: Promise<{ runId: 
   ])) as ChatTrace | null;
   if (!trace) return Response.json({ pending: true }, { status: 202 });
   if (trace.customerId !== customer?.id) return Response.json({ error: "not found" }, { status: 404 });
+  // A new run record exists in AWS: mark the proposal's cached "measured in this demo"
+  // stats stale. Stale-while-revalidate ("max"), so the next visitor still gets an
+  // instant page and the numbers refresh in the background. Nothing else is invalidated.
+  revalidateTag("agent-runs", "max");
   return Response.json(trace);
 }
