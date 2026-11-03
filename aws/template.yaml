@@ -1,0 +1,212 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Northwind Outfitters - existing order & returns platform (stays on AWS).
+  HTTP API (IAM auth) -> Lambda -> DynamoDB, plus the OIDC trust that lets the
+  Vercel-hosted support agent call it without any long-lived credentials.
+
+Parameters:
+  VercelTeamSlug:
+    Type: String
+    Description: Vercel team slug used in the OIDC issuer URL (oidc.vercel.com/<slug>).
+  VercelProjectName:
+    Type: String
+    Default: northwind-support
+
+Resources:
+  # ---------- Data (system of record; never exposed directly to Vercel) ----------
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: northwind-orders
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: orderId, AttributeType: S }
+        - { AttributeName: customerId, AttributeType: S }
+        - { AttributeName: placedAt, AttributeType: S }
+      KeySchema:
+        - { AttributeName: orderId, KeyType: HASH }
+      GlobalSecondaryIndexes:
+        - IndexName: byCustomer
+          KeySchema:
+            - { AttributeName: customerId, KeyType: HASH }
+            - { AttributeName: placedAt, KeyType: RANGE }
+          Projection: { ProjectionType: ALL }
+
+  RefundsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: northwind-refunds
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: refundId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: refundId, KeyType: HASH }
+
+  AgentRunsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: northwind-agent-runs
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - { AttributeName: runId, AttributeType: S }
+      KeySchema:
+        - { AttributeName: runId, KeyType: HASH }
+
+  # ---------- Compute ----------
+  ApiFunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: tables
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:UpdateItem, dynamodb:DeleteItem, dynamodb:Query, dynamodb:Scan]
+                Resource:
+                  - !GetAtt OrdersTable.Arn
+                  - !Sub "${OrdersTable.Arn}/index/*"
+                  - !GetAtt RefundsTable.Arn
+                  - !GetAtt AgentRunsTable.Arn
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: northwind-order-api
+      Runtime: nodejs22.x
+      Handler: index.handler
+      Architectures: [arm64]
+      MemorySize: 256
+      Timeout: 10
+      Role: !GetAtt ApiFunctionRole.Arn
+      Environment:
+        Variables:
+          ORDERS_TABLE: !Ref OrdersTable
+          REFUNDS_TABLE: !Ref RefundsTable
+          RUNS_TABLE: !Ref AgentRunsTable
+      # Placeholder; deploy.ps1 uploads the real code from ./lambda.
+      Code:
+        ZipFile: "exports.handler = async () => ({ statusCode: 503, body: 'deploying' });"
+
+  # ---------- API (IAM-authorized: every call must be SigV4-signed) ----------
+  HttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: northwind-order-api
+      ProtocolType: HTTP
+
+  Integration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !GetAtt ApiFunction.Arn
+      PayloadFormatVersion: "2.0"
+
+  RouteCustomerOrders:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref HttpApi, RouteKey: "GET /customers/{customerId}/orders", AuthorizationType: AWS_IAM, Target: !Sub "integrations/${Integration}" }
+  RouteOrder:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref HttpApi, RouteKey: "GET /orders/{orderId}", AuthorizationType: AWS_IAM, Target: !Sub "integrations/${Integration}" }
+  RouteTracking:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref HttpApi, RouteKey: "GET /orders/{orderId}/tracking", AuthorizationType: AWS_IAM, Target: !Sub "integrations/${Integration}" }
+  RouteEligibility:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref HttpApi, RouteKey: "GET /orders/{orderId}/return-eligibility", AuthorizationType: AWS_IAM, Target: !Sub "integrations/${Integration}" }
+  RouteCreateRefund:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref HttpApi, RouteKey: "POST /refunds", AuthorizationType: AWS_IAM, Target: !Sub "integrations/${Integration}" }
+  RouteListRefunds:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref HttpApi, RouteKey: "GET /refunds", AuthorizationType: AWS_IAM, Target: !Sub "integrations/${Integration}" }
+  RouteGetRefund:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref HttpApi, RouteKey: "GET /refunds/{refundId}", AuthorizationType: AWS_IAM, Target: !Sub "integrations/${Integration}" }
+  RouteTransitionRefund:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref HttpApi, RouteKey: "POST /refunds/{refundId}/transition", AuthorizationType: AWS_IAM, Target: !Sub "integrations/${Integration}" }
+  RoutePostRun:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref HttpApi, RouteKey: "POST /agent-runs", AuthorizationType: AWS_IAM, Target: !Sub "integrations/${Integration}" }
+  RouteListRuns:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref HttpApi, RouteKey: "GET /agent-runs", AuthorizationType: AWS_IAM, Target: !Sub "integrations/${Integration}" }
+  RouteReset:
+    Type: AWS::ApiGatewayV2::Route
+    Properties: { ApiId: !Ref HttpApi, RouteKey: "POST /demo/reset", AuthorizationType: AWS_IAM, Target: !Sub "integrations/${Integration}" }
+
+  Stage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref HttpApi
+      StageName: $default
+      AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 50
+        ThrottlingRateLimit: 20
+
+  InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ApiFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*"
+
+  # ---------- The boundary: Vercel -> AWS via OIDC federation ----------
+  # Vercel issues each deployment a short-lived OIDC token. AWS trusts that issuer and
+  # lets ONLY this project assume a role that can ONLY invoke this API. No access keys
+  # are stored in Vercel, and the role cannot touch DynamoDB directly.
+  VercelOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Properties:
+      Url: !Sub "https://oidc.vercel.com/${VercelTeamSlug}"
+      ClientIdList:
+        - !Sub "https://vercel.com/${VercelTeamSlug}"
+
+  VercelAgentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: northwind-vercel-support-agent
+      MaxSessionDuration: 3600
+      # Condition keys embed the issuer, and CloudFormation can't !Sub a map key, so the
+      # trust policy is a substituted JSON document.
+      # `sub` scopes trust to this one project, all environments (production, preview,
+      # development). For a real rollout, production gets its own role with tighter rights.
+      AssumeRolePolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [{
+            "Effect": "Allow",
+            "Principal": { "Federated": "${VercelOidcProvider}" },
+            "Action": "sts:AssumeRoleWithWebIdentity",
+            "Condition": {
+              "StringEquals": { "oidc.vercel.com/${VercelTeamSlug}:aud": "https://vercel.com/${VercelTeamSlug}" },
+              "StringLike": { "oidc.vercel.com/${VercelTeamSlug}:sub": "owner:${VercelTeamSlug}:project:${VercelProjectName}:environment:*" }
+            }
+          }]
+        }
+      Policies:
+        - PolicyName: invoke-order-api
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: execute-api:Invoke
+                Resource: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/$default/*"
+
+Outputs:
+  ApiUrl:
+    Value: !Sub "https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com"
+  VercelRoleArn:
+    Value: !GetAtt VercelAgentRole.Arn
