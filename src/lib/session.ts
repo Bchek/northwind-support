@@ -13,12 +13,8 @@ const secret = () => new TextEncoder().encode(process.env.SESSION_SECRET);
 const CUSTOMER = "nw_customer";
 const AGENT = "nw_agent";
 
-// Demo credentials, published in the README so reviewers can sign in.
-export const DEMO_AGENT = {
-  email: "lead@northwind.demo",
-  password: "approve-refunds",
-  name: "Alex Kim (Support Lead)",
-};
+import { DEMO_AGENT_PUBLIC as DEMO_AGENT } from "./demo";
+export { DEMO_AGENT };
 
 async function sign(claims: Record<string, string>, ttl: string) {
   return new SignJWT(claims).setProtectedHeader({ alg: "HS256" }).setIssuedAt().setExpirationTime(ttl).sign(secret());
