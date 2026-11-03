@@ -1,4 +1,5 @@
-import "server-only";
+// Server-side only (it signs with AWS credentials). Not marked `import "server-only"`
+// because workflow step bundles run outside the react-server condition and would throw.
 import { awsCredentialsProvider } from "@vercel/oidc-aws-credentials-provider";
 import { AwsClient } from "aws4fetch";
 
@@ -131,12 +132,14 @@ export type AgentRunRecord = {
   durationMs: number;
   requestedModel: string;
   modelsUsed: string[];
+  providersUsed: string[];
   fellBack: boolean;
   steps: number;
   toolCalls: { name: string; ms: number }[];
   inputTokens: number;
   outputTokens: number;
   costUsd: number;
+  generationIds: string[];
   firstUserMessage: string;
 };
 

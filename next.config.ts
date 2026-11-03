@@ -1,7 +1,9 @@
 import type { NextConfig } from "next";
+import { withWorkflow } from "workflow/next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Cache Components: pages are a prerendered static shell by default; anything that
+  // reads the request (cookies, live AWS data) must opt in by sitting behind <Suspense>.
   cacheComponents: true,
   partialPrefetching: true,
   turbopack: {
@@ -14,4 +16,6 @@ const nextConfig: NextConfig = {
   },
 };
 
-export default nextConfig;
+// Compiles "use workflow" / "use step" directives and mounts the workflow runtime routes
+// under /.well-known/workflow.
+export default withWorkflow(nextConfig);
