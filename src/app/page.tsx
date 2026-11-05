@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Badge, Card } from "@/components/ui";
+import { Card } from "@/components/ui";
 import { DEMO_AGENT_PUBLIC } from "@/lib/demo";
 
 // Fully static: no request data, so this whole page is prerendered at build time.
@@ -37,7 +37,6 @@ export default function Home() {
   return (
     <main className="mx-auto w-full max-w-6xl flex-1 px-5 pb-24">
       <section className="pt-16 pb-12 sm:pt-24">
-        <Badge tone="green">Vercel Solutions Architect exercise</Badge>
         <h1 className="mt-5 max-w-3xl text-4xl font-semibold tracking-tight text-balance sm:text-5xl">
           An AI support agent that works with the order system Northwind already runs.
         </h1>
